@@ -4,6 +4,7 @@ use rustc_ast as ast;
 use rustc_ast::ptr::P;
 use rustc_ast::{GenericArg, MetaItem};
 use rustc_expand::base::{Annotatable, ExpandResult, ExtCtxt, MultiItemModifier};
+use rustc_span::profiling::SpannedEventArgRecorder;
 use rustc_span::symbol::{sym, Symbol};
 use rustc_span::Span;
 use thin_vec::{thin_vec, ThinVec};
@@ -57,6 +58,10 @@ impl MultiItemModifier for BuiltinDerive {
         // so we are doing it here in a centralized way.
         let span = ecx.with_def_site_ctxt(span);
         let mut items = Vec::new();
+        let _timer =
+            ecx.sess.prof.generic_activity_with_arg_recorder("expand_builtin_derive", |recorder| {
+                recorder.record_arg_with_span(ecx.sess.source_map(), ecx.expansion_descr(), span);
+            });
         match item {
             Annotatable::Stmt(stmt) => {
                 if let ast::StmtKind::Item(item) = stmt.into_inner().kind {

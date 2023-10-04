@@ -717,6 +717,8 @@ impl Diagnostic {
         applicability: Applicability,
         style: SuggestionStyle,
     ) -> &mut Self {
+        let m = self.subdiagnostic_message_to_diagnostic_message(msg);
+        // println!("ERROR: {:#?} - {:#?} - {:#?}", sp, m, suggestion.to_string());
         debug_assert!(
             !(sp.is_empty() && suggestion.to_string().is_empty()),
             "Span must not be empty and have no suggestion"
@@ -725,7 +727,7 @@ impl Diagnostic {
             substitutions: vec![Substitution {
                 parts: vec![SubstitutionPart { snippet: suggestion.to_string(), span: sp }],
             }],
-            msg: self.subdiagnostic_message_to_diagnostic_message(msg),
+            msg: m,
             style,
             applicability,
         });
