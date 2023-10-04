@@ -32,6 +32,7 @@ use rustc_span::symbol::{kw, sym, Ident, Symbol};
 use rustc_span::{BytePos, FileName, Span, DUMMY_SP};
 use smallvec::{smallvec, SmallVec};
 use std::default::Default;
+use std::fmt::Formatter;
 use std::iter;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -705,7 +706,23 @@ pub enum SyntaxExtensionKind {
     ),
 }
 
+impl std::fmt::Debug for SyntaxExtensionKind {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        let field = match &self {
+            SyntaxExtensionKind::Bang(_) => "Bang",
+            SyntaxExtensionKind::LegacyBang(_) => "LegacyBang",
+            SyntaxExtensionKind::Attr(_) => "Attr",
+            SyntaxExtensionKind::LegacyAttr(_) => "LegacyAttr",
+            SyntaxExtensionKind::NonMacroAttr => "NonMacroAttr",
+            SyntaxExtensionKind::Derive(_) => "Derive",
+            SyntaxExtensionKind::LegacyDerive(_) => "LegacyDerive",
+        };
+        f.debug_tuple("SyntaxExtensionKind").field(&field).finish()
+    }
+}
+
 /// A struct representing a macro definition in "lowered" form ready for expansion.
+#[derive(Debug)]
 pub struct SyntaxExtension {
     /// A syntax extension kind.
     pub kind: SyntaxExtensionKind,
@@ -886,6 +903,7 @@ pub type DeriveResolutions = Vec<(ast::Path, Annotatable, Option<Lrc<SyntaxExten
 
 pub trait ResolverExpand {
     fn next_node_id(&mut self) -> NodeId;
+
     fn invocation_parent(&self, id: LocalExpnId) -> LocalDefId;
 
     fn resolve_dollar_crates(&mut self);
@@ -992,7 +1010,7 @@ impl ModuleData {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct ExpansionData {
     pub id: LocalExpnId,
     pub depth: usize,
@@ -1082,7 +1100,7 @@ impl<'a> ExtCtxt<'a> {
     }
 
     /// Returns the current expansion kind's description.
-    pub(crate) fn expansion_descr(&self) -> String {
+    pub fn expansion_descr(&self) -> String {
         let expn_data = self.current_expansion.id.expn_data();
         expn_data.kind.descr()
     }

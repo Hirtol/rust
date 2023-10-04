@@ -15,7 +15,7 @@ use std::iter::once;
 use std::path::{self, Path, PathBuf};
 use thin_vec::ThinVec;
 
-#[derive(Copy, Clone)]
+#[derive(Debug, Copy, Clone)]
 pub enum DirOwnership {
     Owned {
         // None if `mod.rs`, `Some("foo")` if we're in `foo.rs`.

@@ -9,6 +9,7 @@
 #![feature(proc_macro_span)]
 #![feature(rustc_attrs)]
 #![feature(try_blocks)]
+#![feature(min_specialization)]
 #![recursion_limit = "256"]
 #![deny(rustc::untranslatable_diagnostic)]
 #![cfg_attr(not(bootstrap), allow(internal_features))]

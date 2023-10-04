@@ -161,7 +161,7 @@ impl<S: Encoder> Encodable<S> for LazyAttrTokenStream {
 }
 
 impl<D: Decoder> Decodable<D> for LazyAttrTokenStream {
-    fn decode(_d: &mut D) -> Self {
+    default fn decode(_d: &mut D) -> Self {
         panic!("Attempted to decode LazyAttrTokenStream");
     }
 }
