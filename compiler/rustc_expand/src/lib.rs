@@ -46,6 +46,8 @@ pub mod proc_macro;
 #[allow(rustc::untranslatable_diagnostic)]
 pub(crate) mod mbe;
 
+pub(crate) mod incremental_expansion;
+
 // HACK(Centril, #64197): These shouldn't really be here.
 // Rather, they should be with their respective modules which are defined in other crates.
 // However, since for now constructing a `ParseSess` sorta requires `config` from this crate,
