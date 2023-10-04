@@ -392,8 +392,7 @@ struct MacroIncrementalData {
 #[derive(Encodable, Decodable, Default)]
 struct SpanMapContent {
     /// A map from the hash of the input content to the expanded `AstFragment`
-    pub ast_map: FxHashMap<Fingerprint, AstFragment>, // pub ast: AstFragment,
-                                                      // pub item_hash: u64,
+    pub ast_map: FxHashMap<Fingerprint, AstFragment>,
 }
 
 pub struct MacroExpander<'a, 'b> {
@@ -564,6 +563,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
     }
 
     /// Recursively expand all macro invocations in this AST fragment.
+    #[instrument(level = "debug", skip(self, input_fragment))]
     pub fn fully_expand_fragment(&mut self, input_fragment: AstFragment) -> AstFragment {
         let is_incremental = self.cx.sess.opts.unstable_opts.incremental_macro_expansion;
 
@@ -579,25 +579,6 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         let (mut fragment_with_placeholders, mut invocations) =
             self.collect_invocations(input_fragment, &[]);
 
-        // TODO: Conclusion so far: Difficult to directly serialize AST due to the `LazyAttrTokenStream`s being automatically (attempted) decode
-        // Best option is to deserialize the TokenStream macros (most if not all?) and skip the AstFragment ones
-        // if self.cx.sess.opts.unstable_opts.incremental_macro_expansion && output_path.exists() {
-        //     use rustc_serialize::Decodable;
-        //     let file_data = std::fs::read(&output_path).unwrap();
-        //     let mut decoder = MemDecoder::new(&file_data, 0);
-
-        //     // Finally incorporate all the expanded macros into the input AST fragment.
-        //     let mut placeholder_expander = PlaceholderExpander::default();
-
-        //     while decoder.remaining() > 0 {
-        //         let (expn_id, expanded_fragment) =
-        //             (u32::decode(&mut decoder), AstFragment::decode(&mut decoder));
-        //         let local_expn_id = LocalExpnId::from_u32(expn_id);
-        //         placeholder_expander
-        //             .add(NodeId::placeholder_from_expn_id(local_expn_id), expanded_fragment);
-        //     }
-        // }
-
         // Optimization: if we resolve all imports now,
         // we'll be able to immediately resolve most of imported macros.
         self.resolve_imports();
@@ -612,17 +593,16 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         let (mut progress, mut force) = (false, !self.monotonic);
 
         // INCREMENTAL STUFF
-        let mut _incremental_cache: MacroIncrementalData = if is_incremental
-            && output_path.is_some()
+        let mut incremental_cache: MacroIncrementalData = if is_incremental && output_path.is_some()
         {
             if let Ok(file_data) = std::fs::read(&output_path.as_ref().unwrap()) {
-                println!("Loading incremental cache from {output_path:#?}");
+                tracing::debug!(cache_path=?output_path, "Loading incremental cache");
                 let mut decoder =
                     incremental_decoder::IncrementalMacroDecoder::new(&self.cx.sess, &file_data);
 
                 MacroIncrementalData::decode(&mut decoder)
             } else {
-                println!("No incremental cache present, skipping");
+                tracing::debug!("No incremental cache present, skipping");
 
                 MacroIncrementalData::default()
             }
@@ -676,60 +656,45 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             self.cx.force_mode = force;
 
             let fragment_kind = invoc.fragment_kind;
-            // TODO: Implement deserialization based on hash. `invoc` contains all information necessary (macro path, TokenStream provided to macro
+
             // println!("INVOCATION: {invoc:#?}");
             // println!("INVOCATION EXT: {ext:#?}");
+            // Get the incremental expansion result if it exists.
             let expand_result = match invoc.kind.clone() {
                 InvocationKind::Derive { path: _path, is_const: _is_const, item: _item }
                     if self.cx.sess.opts.unstable_opts.incremental_macro_expansion
                         && ext.builtin_name.is_none() =>
                 {
-                    // First check if our macro cache contains the given macro
+                    // Convert the macro span to a stable(ish) identifier. Ideally we'd resolve this to a full path (f.e., ::core::fmt::Debug)
+                    // But that is difficult to do at this point.
                     let file_name = self.cx.source_map().span_to_embeddable_string(ext.span);
-                    let output = _incremental_cache
+                    let output = incremental_cache
                         .span_map
                         .get(&file_name)
                         .and_then(|data| {
-                            // println!("Cache found macro span: {:#?}", file_name);
+                            tracing::trace!(?file_name, "Cache found for macro");
                             let mut hasher = StableHasher::new();
                             _item.to_tokens().hash_stable(&mut hash_ctx, &mut hasher);
                             let fingerprint: Fingerprint = hasher.finish();
 
-                            // println!(
-                            //     "Calculated fingerprint for {:#?} as {:#?}",
-                            //     _path, fingerprint
-                            // );
-
                             data.ast_map.get(&fingerprint)
                         })
                         .map(|ast| {
-                            // println!("Used cache result for {:#?}", _path);
+                            tracing::trace!(?_path, "Used cache result");
                             ExpandResult::Ready(ast.clone())
                         });
-                    // if let Some(data) = _incremental_cache.span_map.get(&ext.span) {
-                    //     let mut hasher = StableHasher::new();
-                    //     _item.to_tokens().hash_stable(&mut hash_ctx, &mut hasher);
-                    //     let fingerprint: Fingerprint = hasher.finish();
-                    //
-                    //     if let Some(ast) = data.ast_map.get(&fingerprint) {
-                    //         println!("Used cache result for {:#?}", _path);
-                    //         break ExpandResult::Ready(ast.clone());
-                    //     }
-                    // }
+
                     if let Some(output) = output {
                         output
                     } else {
-                        // println!("Missed cache for {:#?}", _path);
+                        tracing::trace!(?_path, "Missed cache");
+
                         // If not available in the cache we'll need to add it ourselves.
                         let result = self.expand_invoc(invoc, &ext.kind);
 
                         if let ExpandResult::Ready(ast) = result {
-                            let content = _incremental_cache.span_map.entry(file_name).or_default();
-                            // Ideally we'd hash the `_item` so that we can match the same content to the same key.
-                            // `StableHash` is a massive pain to work with, however, so I've not managed that so far.
-                            // Instead we opt for a primitive file comparison
-                            // let original_file = invoc.expansion_data.module.file_path_stack.last().expect("Macro invocation without source file");
-                            // let last_modified_date = original_file.metadata().unwrap().modified().unwrap();
+                            let content = incremental_cache.span_map.entry(file_name).or_default();
+
                             let mut hasher = StableHasher::new();
                             _item.to_tokens().hash_stable(&mut hash_ctx, &mut hasher);
                             let fingerprint: Fingerprint = hasher.finish();
@@ -815,7 +780,7 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         if is_incremental && output_path.is_some() {
             let mut encoder = FileEncoder::new(output_path.unwrap()).unwrap();
 
-            _incremental_cache.encode(&mut encoder);
+            incremental_cache.encode(&mut encoder);
 
             encoder.finish().unwrap();
         }
