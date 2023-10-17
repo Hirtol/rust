@@ -157,9 +157,9 @@ impl MultiItemModifier for DeriveProcMacro {
         };
 
         if ecx.sess.opts.unstable_opts.incremental_macro_expansion {
-            println!(
-                "DERIVE: FragmentKind: {_meta_item:#?} - Span: {span:#?}\nTokenStream: {stream:#?}\n"
-            );
+            // println!(
+            //     "DERIVE: FragmentKind: {_meta_item:#?} - Span: {span:#?}\nTokenStream: {stream:#?}\n"
+            // );
         }
 
         let error_count_before = ecx.sess.parse_sess.span_diagnostic.err_count();

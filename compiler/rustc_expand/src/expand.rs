@@ -1,13 +1,9 @@
-use crate::base::*;
-use crate::config::StripUnconfigured;
-use crate::errors::{
-    IncompleteParse, RecursionLimitReached, RemoveExprNotSupported, RemoveNodeNotSupported,
-    UnsupportedKeyValue, WrongFragmentKind,
-};
-use crate::hygiene::SyntaxContext;
-use crate::mbe::diagnostics::annotate_err_with_kind;
-use crate::module::{mod_dir_path, parse_external_mod, DirOwnership, ParsedExternalMod};
-use crate::placeholders::{placeholder, PlaceholderExpander};
+use std::ops::Deref;
+use std::path::PathBuf;
+use std::rc::Rc;
+use std::{iter, mem};
+
+use smallvec::SmallVec;
 
 use rustc_ast as ast;
 use rustc_ast::mut_visit::*;
@@ -20,7 +16,9 @@ use rustc_ast::{ForeignItemKind, HasAttrs, HasNodeId};
 use rustc_ast::{Inline, ItemKind, MacStmtStyle, MetaItemKind, ModKind};
 use rustc_ast::{NestedMetaItem, NodeId, PatKind, StmtKind, TyKind};
 use rustc_ast_pretty::pprust;
+use rustc_data_structures::fingerprint::Fingerprint;
 use rustc_data_structures::flat_map_in_place::FlatMapInPlace;
+use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
 use rustc_data_structures::sync::Lrc;
 use rustc_errors::PResult;
 use rustc_feature::Features;
@@ -35,14 +33,18 @@ use rustc_session::Limit;
 use rustc_span::symbol::{sym, Ident};
 use rustc_span::{FileName, LocalExpnId, Span};
 
+use crate::base::*;
+use crate::config::StripUnconfigured;
+use crate::errors::{
+    IncompleteParse, RecursionLimitReached, RemoveExprNotSupported, RemoveNodeNotSupported,
+    UnsupportedKeyValue, WrongFragmentKind,
+};
+use crate::hygiene::SyntaxContext;
+use crate::incremental_expansion::stable_hashing_ctx_expansion::StableHashCtx;
 use crate::incremental_expansion::IncrementalExpander;
-use rustc_data_structures::fingerprint::Fingerprint;
-use rustc_data_structures::stable_hasher::{HashStable, StableHasher};
-use smallvec::SmallVec;
-use std::ops::Deref;
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::{iter, mem};
+use crate::mbe::diagnostics::annotate_err_with_kind;
+use crate::module::{mod_dir_path, parse_external_mod, DirOwnership, ParsedExternalMod};
+use crate::placeholders::{placeholder, PlaceholderExpander};
 
 macro_rules! ast_fragments {
     (
@@ -588,65 +590,83 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         invoc: Invocation,
         ext: &SyntaxExtension,
     ) -> ExpandResult<AstFragment, Invocation> {
-        if !self.incremental.is_enabled() {
-            return self.expand_invoc(invoc, &ext.kind);
-        }
-        let mut hash_ctx = StableHashCtx;
-
-        match invoc.kind.clone() {
-            InvocationKind::Derive { path: _path, is_const: _is_const, item }
-                if self.cx.sess.opts.unstable_opts.incremental_macro_expansion
-                    && ext.builtin_name.is_none()
-                    && self.incremental.is_macro_unchanged(&invoc) =>
-            {
-                // Convert the macro span to a stable(ish) identifier. Ideally we'd resolve this to a full path (f.e., ::core::fmt::Debug)
-                // But that is difficult to do at this point.
-                let file_name = self.cx.source_map().span_to_embeddable_string(ext.span);
-                let output = self
-                    .incremental
-                    .cache()
-                    .span_map
-                    .get(&file_name)
-                    .and_then(|data| {
-                        tracing::trace!(?file_name, "Cache found for macro");
-                        let mut hasher = StableHasher::new();
-                        item.to_tokens().hash_stable(&mut hash_ctx, &mut hasher);
-                        let fingerprint: Fingerprint = hasher.finish();
-
-                        data.ast_map.get(&fingerprint)
-                    })
-                    .map(|ast| {
-                        tracing::trace!(?_path, "Used cache result");
-                        ExpandResult::Ready(ast.clone())
-                    });
-
-                if let Some(output) = output {
-                    output
-                } else {
-                    tracing::trace!(?_path, "Missed cache");
-
-                    // If not available in the cache we'll need to add it ourselves.
-                    let result = self.expand_invoc(invoc, &ext.kind);
-
-                    if let ExpandResult::Ready(ast) = result {
-                        let content =
-                            self.incremental.cache().span_map.entry(file_name).or_default();
-
-                        let mut hasher = StableHasher::new();
-                        item.to_tokens().hash_stable(&mut hash_ctx, &mut hasher);
-                        let fingerprint: Fingerprint = hasher.finish();
-
-                        content.ast_map.insert(fingerprint, ast.clone());
-                        ExpandResult::Ready::<_, Invocation>(ast)
-                    } else {
-                        result
+        if self.incremental.is_enabled()
+            && ext.builtin_name.is_none()
+            && self.incremental.is_macro_unchanged(&invoc)
+        {
+            match invoc.kind.clone() {
+                InvocationKind::Derive { path: _path, is_const: _is_const, item } => {
+                    return self.expand_cached_macro(invoc, &ext, item);
+                }
+                // Ignore Bang macros till we can figure out if they've been changed
+                // InvocationKind::Bang { .. } => {}
+                InvocationKind::Attr { item, .. } => {
+                    match &ext.kind {
+                        SyntaxExtensionKind::Attr(_) => {
+                            return self.expand_cached_macro(invoc, &ext, item);
+                        }
+                        // SyntaxExtensionKind::NonMacroAttr straight up shouldn't be cached
+                        // SyntaxExtensionKind::LegacyAttr(_) is annoying to deal with!
+                        _ => {}
                     }
                 }
+                _ => {}
             }
-            // Ignore Bang and Attr macros till we can figure out if they've been changed
-            // InvocationKind::Bang { .. } => {}
-            // InvocationKind::Attr { .. } => {}
-            _ => self.expand_invoc(invoc, &ext.kind),
+        }
+
+        // If none of the above applies just perform the normal expansion
+        self.expand_invoc(invoc, &ext.kind)
+    }
+
+    fn expand_cached_macro(
+        &mut self,
+        invoc: Invocation,
+        ext: &SyntaxExtension,
+        item: Annotatable,
+    ) -> ExpandResult<AstFragment, Invocation> {
+        // Convert the macro span to a stable(ish) identifier. Ideally we'd resolve this to a full path (f.e., ::core::fmt::Debug)
+        // But that is difficult to do at this point.
+        let file_name = self.cx.source_map().span_to_embeddable_string(ext.span);
+        let mut hash_ctx = StableHashCtx;
+
+        let output = self
+            .incremental
+            .cache()
+            .span_map
+            .get(&file_name)
+            .and_then(|data| {
+                tracing::trace!(?file_name, "Cache found for macro");
+                let mut hasher = StableHasher::new();
+                item.to_tokens().hash_stable(&mut hash_ctx, &mut hasher);
+                let fingerprint: Fingerprint = hasher.finish();
+
+                data.ast_map.get(&fingerprint)
+            })
+            .map(|ast| {
+                tracing::trace!(?ext, "Used cache result");
+                ExpandResult::Ready(ast.clone())
+            });
+
+        if let Some(output) = output {
+            output
+        } else {
+            tracing::trace!(?ext, "Missed cache");
+
+            // If not available in the cache we'll need to add it ourselves.
+            let result = self.expand_invoc(invoc, &ext.kind);
+
+            if let ExpandResult::Ready(ast) = result {
+                let content = self.incremental.cache().span_map.entry(file_name).or_default();
+
+                let mut hasher = StableHasher::new();
+                item.to_tokens().hash_stable(&mut hash_ctx, &mut hasher);
+                let fingerprint: Fingerprint = hasher.finish();
+
+                content.ast_map.insert(fingerprint, ast.clone());
+                ExpandResult::Ready::<_, Invocation>(ast)
+            } else {
+                result
+            }
         }
     }
 
@@ -752,11 +772,11 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                         return ExpandResult::Ready(fragment_kind.dummy(span));
                     };
 
-                    if self.cx.sess.opts.unstable_opts.incremental_macro_expansion {
-                        println!(
-                            "BANG: FragmentKind: {fragment_kind:#?} - Span: {span:#?}\nTokenStream: {tok_result:#?}\n"
-                        );
-                    }
+                    // if self.cx.sess.opts.unstable_opts.incremental_macro_expansion {
+                    //     println!(
+                    //         "BANG: FragmentKind: {fragment_kind:#?} - Span: {span:#?}\nTokenStream: {tok_result:#?}\n"
+                    //     );
+                    // }
 
                     self.parse_ast_fragment(tok_result, fragment_kind, &mac.path, span)
                 }
@@ -764,11 +784,11 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                     let tok_result = expander.expand(self.cx, span, mac.args.tokens.clone());
 
                     let result = if let Some(result) = fragment_kind.make_from(tok_result) {
-                        if self.cx.sess.opts.unstable_opts.incremental_macro_expansion {
-                            println!(
-                                "LEGACYBANG: FragmentKind: {fragment_kind:#?} - Span: {span:#?}\nAstStream: {result:#?}\n"
-                            );
-                        }
+                        // if self.cx.sess.opts.unstable_opts.incremental_macro_expansion {
+                        //     println!(
+                        //         "LEGACYBANG: FragmentKind: {fragment_kind:#?} - Span: {span:#?}\nAstStream: {result:#?}\n"
+                        //     );
+                        // }
                         result
                     } else {
                         self.error_wrong_fragment_kind(fragment_kind, &mac, span);
@@ -820,11 +840,11 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                         return ExpandResult::Ready(fragment_kind.dummy(span));
                     };
 
-                    if self.cx.sess.opts.unstable_opts.incremental_macro_expansion {
-                        println!(
-                            "ATTRIBUTE: FragmentKind: {fragment_kind:#?} - Span: {span:#?}\nTokenStream: {tok_result:#?}\n"
-                        );
-                    }
+                    // if self.cx.sess.opts.unstable_opts.incremental_macro_expansion {
+                    //     println!(
+                    //         "ATTRIBUTE: FragmentKind: {fragment_kind:#?} - Span: {span:#?}\nTokenStream: {tok_result:#?}\n"
+                    //     );
+                    // }
 
                     self.parse_ast_fragment(tok_result, fragment_kind, &attr_item.path, span)
                 }
@@ -842,11 +862,11 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                                 }
                             };
 
-                            if self.cx.sess.opts.unstable_opts.incremental_macro_expansion {
-                                println!(
-                                    "LEGACYATTR: FragmentKind: {fragment_kind:#?} - Span: {span:#?}\nTokenStream: {items:#?}\n"
-                                );
-                            }
+                            // if self.cx.sess.opts.unstable_opts.incremental_macro_expansion {
+                            //     println!(
+                            //         "LEGACYATTR: FragmentKind: {fragment_kind:#?} - Span: {span:#?}\nTokenStream: {items:#?}\n"
+                            //     );
+                            // }
 
                             if matches!(
                                 fragment_kind,
@@ -2099,6 +2119,7 @@ impl<'a, 'b> MutVisitor for InvocationCollector<'a, 'b> {
     }
 }
 
+#[derive(Debug)]
 pub struct ExpansionConfig<'feat> {
     pub crate_name: String,
     pub features: &'feat Features,
