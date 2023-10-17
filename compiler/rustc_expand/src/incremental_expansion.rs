@@ -6,7 +6,7 @@ use rustc_serialize::opaque::FileEncoder;
 use rustc_serialize::{Decodable, Encodable};
 use rustc_session::Session;
 
-use crate::expand::AstFragment;
+use crate::expand::{AstFragment, Invocation};
 
 pub struct IncrementalExpander {
     persist_path: Option<PathBuf>,
@@ -43,6 +43,14 @@ impl IncrementalExpander {
         }
 
         Ok(())
+    }
+
+    /// Check whether the given macro has been changed since the last invocation.
+    ///
+    /// If `false` all macro invocation instances need to be re-expanded.
+    pub fn is_macro_unchanged(&self, _invoc: &Invocation) -> bool {
+        // TODO for Derive macros (Check if compiled macro has been changed) and bang! macros
+        true
     }
 
     pub fn is_enabled(&self) -> bool {
@@ -171,7 +179,7 @@ mod incremental_decoder {
     }
 }
 
-mod stable_hashing_ctx_expansion {
+pub mod stable_hashing_ctx_expansion {
     use rustc_ast::{Attribute, HashStableContext};
     use rustc_data_structures::stable_hasher::{HashingControls, StableHasher};
     use rustc_data_structures::sync::Lrc;

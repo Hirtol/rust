@@ -596,7 +596,8 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
         match invoc.kind.clone() {
             InvocationKind::Derive { path: _path, is_const: _is_const, item }
                 if self.cx.sess.opts.unstable_opts.incremental_macro_expansion
-                    && ext.builtin_name.is_none() =>
+                    && ext.builtin_name.is_none()
+                    && self.incremental.is_macro_unchanged(&invoc) =>
             {
                 // Convert the macro span to a stable(ish) identifier. Ideally we'd resolve this to a full path (f.e., ::core::fmt::Debug)
                 // But that is difficult to do at this point.
