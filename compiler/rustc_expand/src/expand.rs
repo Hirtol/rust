@@ -644,11 +644,11 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
             })
             .map(|ast| {
                 tracing::trace!(?ext, "Used cache result");
-                ExpandResult::Ready(ast.clone())
+                ast.clone()
             });
 
         if let Some(output) = output {
-            output
+            ExpandResult::Ready(self.incremental.fixup_ast(output, &self.cx.sess))
         } else {
             tracing::trace!(?ext, "Missed cache");
 
@@ -909,7 +909,9 @@ impl<'a, 'b> MacroExpander<'a, 'b> {
                             });
                         }
                     };
-                    fragment_kind.expect_from_annotatables(items)
+                    let ast = fragment_kind.expect_from_annotatables(items);
+                    // println!("Proc macro: {:#?}\nOUTPUT: {ast:#?}", meta.path);
+                    ast
                 }
                 _ => unreachable!(),
             },

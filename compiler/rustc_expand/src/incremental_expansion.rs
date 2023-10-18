@@ -1,3 +1,6 @@
+use rustc_ast::attr::AttrIdGenerator;
+use rustc_ast::mut_visit::MutVisitor;
+use rustc_ast::Attribute;
 use std::path::{Path, PathBuf};
 
 use rustc_data_structures::fingerprint::Fingerprint;
@@ -45,6 +48,25 @@ impl IncrementalExpander {
         }
 
         Ok(())
+    }
+
+    pub fn fixup_ast(&self, mut ast_fragment: AstFragment, sess: &Session) -> AstFragment {
+        // AttrIds are session unique, we'll need to traverse the persisted AST and set the Ids to valid ones.
+        struct GateProcMacroInput<'a> {
+            attr_id_gen: &'a AttrIdGenerator,
+        }
+
+        impl<'a> MutVisitor for GateProcMacroInput<'a> {
+            fn visit_attribute(&mut self, at: &mut Attribute) {
+                println!("VISITED: {at:#?}");
+                at.id = self.attr_id_gen.mk_attr_id();
+            }
+        }
+
+        let mut visitor = GateProcMacroInput { attr_id_gen: &sess.parse_sess.attr_id_generator };
+        ast_fragment.mut_visit_with(&mut visitor);
+
+        ast_fragment
     }
 
     /// Check whether the given macro has been changed since the last invocation.
