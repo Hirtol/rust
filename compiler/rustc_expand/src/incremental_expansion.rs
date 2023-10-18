@@ -26,6 +26,8 @@ impl IncrementalExpander {
 
     pub fn initialise(&mut self, sess: &Session) {
         if self.cache.is_none() {
+            let _timer = sess.prof.generic_activity("init_incr_macro_session");
+
             self.cache =
                 self.persist_path.as_ref().map(|path| initialise_macro_cache(path.as_path(), sess));
         }

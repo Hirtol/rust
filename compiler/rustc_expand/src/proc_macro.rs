@@ -166,20 +166,30 @@ impl MultiItemModifier for DeriveProcMacro {
         let mut parser =
             rustc_parse::stream_to_parser(&ecx.sess.parse_sess, stream, Some("proc-macro derive"));
         let mut items = vec![];
+        {
+            let _timer =
+                ecx.sess.prof.generic_activity_with_arg_recorder("parse_tokenstream", |recorder| {
+                    recorder.record_arg_with_span(
+                        ecx.sess.source_map(),
+                        ecx.expansion_descr(),
+                        span,
+                    );
+                });
 
-        loop {
-            match parser.parse_item(ForceCollect::No) {
-                Ok(None) => break,
-                Ok(Some(item)) => {
-                    if is_stmt {
-                        items.push(Annotatable::Stmt(P(ecx.stmt_item(span, item))));
-                    } else {
-                        items.push(Annotatable::Item(item));
+            loop {
+                match parser.parse_item(ForceCollect::No) {
+                    Ok(None) => break,
+                    Ok(Some(item)) => {
+                        if is_stmt {
+                            items.push(Annotatable::Stmt(P(ecx.stmt_item(span, item))));
+                        } else {
+                            items.push(Annotatable::Item(item));
+                        }
                     }
-                }
-                Err(mut err) => {
-                    err.emit();
-                    break;
+                    Err(mut err) => {
+                        err.emit();
+                        break;
+                    }
                 }
             }
         }
