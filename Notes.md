@@ -123,10 +123,48 @@ struct Impl;
 impl Peano for Impl {
     type Nat = Box<dyn crate::Nat>;
     type Succ = Box<dyn crate::Succ>;
-    
+
 }
 ```
 
 The remainder of the paper goes into detail on various extensions to this above definition (e.g, allowing pattern matching on the virtual ADT, or adding extension methods to the virtual ADT to mimic the original ADT's interface). It seems _very_ Scala specific in the problem it introduces and solves, don't think there's much transferable knowledge to Rust.
 
 Pattern matching ala Scala definitely wouldn't be possible (so I guess that would need to be a language extension?).
+
+## Generating C: Heterogeneous metaprogramming system description [here](https://pdf.sciencedirectassets.com/271600/1-s2.0-S0167642323X00069/1-s2.0-S0167642323000977/main.pdf)
+
+The paper primarily talks about using OCaml (by writing OCaml source, compiling it, then running that executable) to generate _safe_, _correct_, and _performant_ C code. This resulting code should then be usable as regular C library code. It could also be compiled and dynamically linked into the generator.
+
+One approach was apparently offshoring (potential reference: [here](https://link.springer.com/article/10.1007/s00354-007-0020-x)). Where essentially one translates the correct, higher level language (e.g., OCaml) into correct, low-level C. This paper improved upon this fundamental concept, outlining various challanges they encountered. This could be useful for the Rust compiler when looking at it from the perspective of benefitting from Rust memory safety guarantees, while not complicating a build system by avoiding the introduction of the Rust compiler, and instead generating C for use within the existing build system. If we explore this direction there's probably some Model Driven Engineering papers to use, as it's essentially the same idea as model translation (where we treat each language as the metamodel to translate between).
+
+The challenges of directly generating C starts by concluding that any metaprogramming should _never_ represent other programs as Strings if you value your sanity, ala ATLAS. The obvious next approach is to therefore represent the data as an (sort of) AST and pretty print C as the last step. In comes off-shoring:
+
+Off-shoring is usually done with some select subset of the higher level language which can (easily) be directly translated to C. Subsequently, generating valid OCaml (with say, macros) is in effect generating C through the use of offshoring. Turning homogenous metaprogramming to heterogenous. The former and later are the first and second premise of off-shoring, respectively. In the case of OCaml generating valid OCaml is done with MetaOCaml. (Question, would Rust Macros be the equivalent? Not entirely, as one is free to generate invalid TokenStreams which are only later marked as invalid after the parent Rustc type-checks the generated output. Then again, the `quote!` macro _does_ create well-formed Rust code -- similar to the brackets in MetaOcaml --, so maybe?). In fact, a Rust to C compiler already exists in a (limited) form: [here](https://github.com/thepowersgang/mrustc). Fun project idea: Implement a C code-gen as a compiler back-end. The prior project is a re-implementation of Rustc in C++.
+
+```
+Generating C via offshoring proceeds as:
+1. implement the algorithm in OCaml
+2. stage it – add staging annotations – and generate (possibly specialized) OCaml code (NOTE FOR SELF: don't quite get the necessity of this? Why not use 1. directly?)
+(a) test the generated code
+3. convert the generated OCaml code to C, saving it into a file
+4. (a) compile and link the generated C code as ordinary C library code
+(b) compile the generated C code and (dynamically) link into an OCaml program, via an FFI such as [20].
+```
+
+Addendum to the above: The use case for step 2. is nicely highlighted in page 5-6 of the paper! Essentially, it allows for generating a variety of different forms of the same function for different levels of optimisation. Good for experimenting, nothing you couldn't do with Rust macros as is.
+
+- (Bunch of examples to slowly build a re-usable OCaml `addv` generator function ala macros, cool, but skipping for now.) -
+
+The offshorable subset of OCaml is the imperative part thereof. That is difficult to express in the OCaml type system (Could we do it in Rust? Probably not, would need extensions). Thus, one could pass generated OCaml using features not useable in the offshoring procedures. This doesn't invalidate the results, as it just throws an exception in such cases, but one would first always have to generate all that OCaml code first.
+
+### Challenges
+
+1. Type inference. Some of the generated OCaml code won't contain types, which must instead be inferred by the OCaml type checker. In the offshoring they use 2 separate IRs to derive the types. In a Rust equivalent one could use the HIR (as it will contain all desugared lifetimes/types), or just explicitly specify all types during staging.
+2. Local Variables, namely that in OCaml variable declarations are expressions. Not as much a problem in Rust as (far as I am aware) declarations are statements. It's just that variable initialization _is_ an arbitrary expression. For OCaml they first translate to OffshoringIR (a third IR) which is statement oriented, which can then be translated directly to C99.
+3. Extensibility, old off-shoring implementations weren't really extendable without recompiling the compiler. They addressed this by making their implementation a library which one can easily extend to implement support for OCaml unsupported types, external pointer types, etc, or call external functions. They create a separate OCaml module to allow one to bind external functions (no seeming way to specify calling convention??). This seems fragile to my eyes, but it might be I'm just not understanding their code correcly.
+4. Control structures, For loops are rather restricted in OCaml, so they define a different macro function which allows them to emulate arbitrary step sizes. Rust wouldn't have quite the same problem, as for loops _are_ powerful enough for that, but are based on Ranges (which are iterators). Fully translating iterators would be difficult on a syntax level (may be possible from MIR onwards as everything is desugared/ready for LLVM generation at that point). Solving that would most likely be difficult, so one would maybe make a cut-off to only support basic Range syntax for the conversion from Rust to C.
+5. No recursion. The off-shoring only off shores a single function, and OCaml doesn't have local function declarations (Rust does, so I suppose you could translate those?). For loops would therefore be preferred over recursion.
+6. Pointer types. Essentially, the mutable variable semantics in OCaml can be difficult to translate in full to C without using more memory/variables. For this part see the actual section as it's too wordy to explain here. One solution is just restricting the off-shorable subset of OCaml. In Rust the same problems don't exist as reference types are almost entirely equal to C equivalents, including `mut` and `const`.
+
+All in all the hetergenous meta language approach is best expressed in a language where composability is something that can easily be achieved. Need to evaluate how composable we could make Rust macros for expressing these patterns.
+
