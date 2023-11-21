@@ -37,7 +37,7 @@ Conclusions 30-10-2023:
 ## Fluid Quotes: Metaprogramming across Abstraction Boundaries with Dependent Types [here](https://dl.acm.org/doi/pdf/10.1145/3425898.3426953)
 
 Multi-stage programming systems is another avenue of allowing runtime macros (though at the cost of bundeling the compiler). Not possible with AoT compilers.
-Fluid quotes require dependant types and the ability to expand the type checker with custom expansions, through macros or custom compiler APIs (Rust should be applicable here!)
+Fluid quotes require dependent types and the ability to expand the type checker with custom expansions, through macros or custom compiler APIs (Rust should be applicable here!)
 
 The motivating example lists a situation where we need to get the method body of an opaque method call within a macro (e.g. macro!(2\*preprocess(5)) ). This can't be done in most situations, this is where Fluid Quotes come in. This is similar(ish) to the compile time reflection initiative which died in Rustc earlier this year.
 
@@ -91,6 +91,12 @@ def cappedLoop(condition: FluidQuote[Boolean],
 ```
 
 The FluidQuotes have a few restrictions, namely dynamic branches which return different `FluidQuotes` are impossible to remedy as they require type erasure, and thereby remove the information in the associated `Expr` type. This can have _some_ remedies, but they come down to a runtime evaluation of the branch, while splicing _all_ possible `FluidQuotes` thus ballooning code size.
+
+#### Additional Papers
+
+Might be relevant based on references:
+
+-   Macros that work together (offered a macro API that exposes compile-time information to enable macro cooperation)): http://dx.doi.org/10.1017/S0956796812000093
 
 ### Applications
 
@@ -153,7 +159,7 @@ Generating C via offshoring proceeds as:
 
 Addendum to the above: The use case for step 2. is nicely highlighted in page 5-6 of the paper! Essentially, it allows for generating a variety of different forms of the same function for different levels of optimisation. Good for experimenting, nothing you couldn't do with Rust macros as is.
 
-- (Bunch of examples to slowly build a re-usable OCaml `addv` generator function ala macros, cool, but skipping for now.) -
+-   (Bunch of examples to slowly build a re-usable OCaml `addv` generator function ala macros, cool, but skipping for now.) -
 
 The offshorable subset of OCaml is the imperative part thereof. That is difficult to express in the OCaml type system (Could we do it in Rust? Probably not, would need extensions). Thus, one could pass generated OCaml using features not useable in the offshoring procedures. This doesn't invalidate the results, as it just throws an exception in such cases, but one would first always have to generate all that OCaml code first.
 
@@ -168,3 +174,61 @@ The offshorable subset of OCaml is the imperative part thereof. That is difficul
 
 All in all the hetergenous meta language approach is best expressed in a language where composability is something that can easily be achieved. Need to evaluate how composable we could make Rust macros for expressing these patterns.
 
+## Semantics-Preserving Inlining for Metaprogramming [here](https://sci-hub.se/https://doi.org/10.1145/3426426.3428486)
+
+Unlikely to be relevant, as it introduces inlining for Scala, but the Rust compiler hints already exists (+ comptime evaluation).
+The paper talks about inlining as a form of metaprogramming (after all, an inlined method _produces_ code at a call site). There is
+a difference between _semantic_ and _syntactic_ inlining. In _semantic_ inlining the existing semantics of the program are preserved (See paper example).
+In _syntactic_ the meaning could be changed due to, for example, type based method overloading.
+
+Scala 3's `inline val x = 3` is essentially Rusts `const x: i32 = 3`, in that it replaces any instance with the right hand side directly.
+With inline parameters (only possible for inline functions) one unlocks some metaprogramming, as one could force repetition of computation/side effects (by e.g., passing an inline closure, it is executed `n` times, but then possibly removed due to optimisations affored by that inlining)
+
+When writing the section probably refer to: https://docs.scala-lang.org/scala3/guides/macros/inline.html
+
+## A Survey of Metaprogramming Languages [here](https://sci-hub.se/https://dl.acm.org/doi/10.1145/3354584)
+
+Could use this paper to classify Rust as a MetaLang into the same categories as the other languages in this paper. It is not currently included, so would be a (minor) novel contribution. Only a single paragraph of content, but hey, it's something!
+
+In this taxonomy of metaprogramming languages the languages are classified. They identify three evaluation phases for metaprograms:
+
+1. Before compilation, as a preprocessing step (C)
+2. During compilation (Rust, C++ Templates (?))
+3. During execution (Java Reflection, C# Harmony)
+
+They also create classifications on the relation between the object language (to be generated language) and metalanguage (generating language):
+Note that this classification is dependent on the selection of ObjLang. MetaML is, for example, category 2 when ObjLang is ML, but category 1 when ObjLang is MetaML.
+
+1. MetaLang and ObjLang are indistinguishable (identical or subset) (Rust (Same constructs through same syntax. Common use of the quote! macro for actual code quoting, though. Splicing through nested quote! outputs))
+2. MetaLang extending the ObjLang (MetaOCaml)
+3. MetaLang being a different language (Heterogenous metaprogramming ala paper number 3.)
+
+There is also the metaprogram source location as a point of classification:
+
+1. In-source (Rust macro_rules! (context-unawaware), MetaOCaml, Lisp)
+2. External source (Rust proc-macros (context-aware, though not possible according to their classification))
+
+And lastly various methods for metaprogramming:
+
+1. Macros (Rust, Lisp)
+    - Two categories, lexical macros (language agnostic and operate on a lexical level, aka, token sequences. Rust(?, technically not, see section 3.1.2), C), and syntactic macros (which are aware of the language syntax and semantics, Rust macro-rules (CTMP), Lisp?)
+2. Relfection (Java)
+3. Metaobject Protocols (??)
+4. Aspect Oriented Programming
+5. Generative Programming (Automatically make a system based on a domain specific application specification, using pre-built (small) components)
+    - C++ templates are an example of this actually!
+    - Java annotation processors are another
+6. Multistage Programming (Divide a program into levels of evaluation using staging annotations, allowing creation of delayed computations or specializations)
+    - Closely related to partial evaluation
+    - Can be seen as macro expansion. Macro systems use extra syntax for definitions and normal (function-like) syntax for invocations, while in MSP the extra syntax is needed at the call site to execute the returned delayed computation
+    - MSLs are also categorized as homogeneous, when the metalanguage is the same as the object language, or heterogeneous, when the metalanguage and object language are different
+    - MetaOCaml is an example of this approach, as could be seen in paper number 3!
+    - C++ can be seen as a two stage language between template instantiation (first stage) and nontemplate code translation (second stage)
+
+#### Additional Papers:
+
+-   Inverse macro in Scala: https://dl.acm.org/doi/10.1145/2814204.2814213 (Initial inspection implies little Rust relevance, but could explore it more in-depth if we're short on content)
+-   Gestalt (macro portability, looks related to VADT): https://infoscience.epfl.ch/record/231413?ln=en
+-   Mython (Generative Programming, embedding C directly in Python code): https://dl-acm-org.ezproxy2.utwente.nl/doi/pdf/10.1145/1837513.1640141
+-   A Practical Unification of Multi-stage Programming and Macros (multistage programming with quotes/splices and introduction thereof): https://dl-acm-org.ezproxy2.utwente.nl/doi/pdf/10.1145/3278122.3278139
+-   Unifying Analytic and Statically-Typed Quasiquotes: https://dl.acm.org/doi/pdf/10.1145/3158101
